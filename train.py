@@ -13,7 +13,7 @@ from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 from functools import partial
 
-
+import time
 import json, random
 from renderer import *
 from utils import *
@@ -24,7 +24,6 @@ from dynamics import Dynamics
 from dataLoader import dataset_dict
 import sys
 from torch.profiler import profile, record_function, ProfilerActivity
-
 
 # torch.backends.cudnn.benchmark = True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -51,7 +50,8 @@ def export_mesh(args):
 def render_test(args):
     # init dataset
     dataset = dataset_dict[args.dataset_name]
-    test_dataset = dataset(args.datadir, split='test', downsample=args.downsample_train, is_stack=True,
+    split = args.render_split
+    test_dataset = dataset(args.datadir, split=split, downsample=args.downsample_train, is_stack=True,
                            n_frames=args.n_frames, render_views=args.render_views, scene_box=args.scene_box,
                            frame_start=args.frame_start, near=args.near, far=args.far, diffuse_kernel=args.diffuse_kernel)
     white_bg = test_dataset.white_bg
@@ -126,7 +126,7 @@ def render_test(args):
     if args.render_test:
         os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
         with autocast(enabled=bool(args.amp)):
-            PSNRs_test, PSNRs_STA_test, all_metrics = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/{args.expname}/imgs_test_all/',
+            PSNRs_test, PSNRs_STA_test, all_metrics = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_test_all/',
                                     N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device, simplify=(args.n_frames>0),
                                     static_branch_only=args.static_branch_only_initial, remove_foreground=args.remove_foreground)
         print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
@@ -222,16 +222,20 @@ def reconstruction(args):
     # init dataset
     dataset = dataset_dict[args.dataset_name]
     time_dataset_start = time.time()
+    if 'mixvoxels_exp' in args.basedir:
+        exp = True
+    else:
+        exp = False
     train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=False,
                             n_frames=args.n_frames, scene_box=args.scene_box, temporal_variance_threshold=args.temporal_variance_threshold,
-                            frame_start=args.frame_start, near=args.near, far=args.far, diffuse_kernel=args.diffuse_kernel)
+                            frame_start=args.frame_start, near=args.near, far=args.far, diffuse_kernel=args.diffuse_kernel, exp=exp)
     time_dataset_end = time.time()
     print(f'Loading Train Dataset: {time_dataset_end-time_dataset_start}s')
     time_dataset_start = time_dataset_end
     test_dataset = dataset(args.datadir, split='test', downsample=args.downsample_train, is_stack=True,
                            n_frames=args.n_frames, render_views=args.render_views, scene_box=args.scene_box,
                            temporal_variance_threshold=args.temporal_variance_threshold,
-                           frame_start=args.frame_start, near=args.near, far=args.far, diffuse_kernel=args.diffuse_kernel)
+                           frame_start=args.frame_start, near=args.near, far=args.far, diffuse_kernel=args.diffuse_kernel, exp=exp)
     time_dataset_end = time.time()
     print(f'Loading Test Dataset: {time_dataset_end-time_dataset_start}s')
 
@@ -245,7 +249,8 @@ def reconstruction(args):
     n_lamb_sigma = args.n_lamb_sigma
     n_lamb_sh = args.n_lamb_sh
 
-    args.expname = os.path.basename(args.config.split('.')[0])
+    #args.expname = os.path.basename(args.config.split('.')[0])
+    args.expname = os.path.basename(args.config).split('.')[0]
     # if args.meta_config is not None:
     #     args.expname = args.expname + '_' + os.path.basename(args.meta_config.split('.')[0])
     # args.expname = '_'.join([args.expname, utils.base_dir(args.datadir), str(args.downsample_train)])
@@ -415,6 +420,7 @@ def reconstruction(args):
             lr_factor = math.cos((iteration + 1.0) / args.n_iters * math.pi / 2) / math.cos((iteration + 0.0) / args.n_iters * math.pi / 2)
         gamma_current = iteration/args.n_iters * (args.gamma_end - args.gamma_start) + args.gamma_start
         ray_idx = trainingSampler.nextids(gamma=gamma_current)
+        #print(f'rays_idx: {ray_idx}')
         rays_train, rgb_train, std_train = allrays[ray_idx].to(device).float(), allrgbs[ray_idx].to(device).float(), allstds[ray_idx].to(device).float()
         args.static_branch_only = args.static_branch_only_initial
         temporal_indices, supervision_rgb_train = temporal_sampler.sample(rgb_train, iteration)
@@ -640,6 +646,7 @@ def reconstruction(args):
                 if key not in TESTKEYS:
                     Metrics[key] = []
 
+        #print(iteration, args.vis_every, args.N_vis)
         if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
             tensorf.save(f'{logfolder}/{args.expname}.th')
             cuda_empty()
@@ -664,7 +671,7 @@ def reconstruction(args):
 
             if not args.ndc_ray and iteration == update_AlphaMask_list[1]:
                 # filter rays outside the bbox
-                allrays,allrgbs = tensorf.filtering_rays(allrays,allrgbs)
+                allrays,allrgbs,allstds = tensorf.filtering_rays(allrays,allrgbs,allstds)
                 # trainingSampler = SimpleSampler(allrgbs.shape[0], args.batch_size)
             cuda_empty()
             current_batch_size = int(batch_factor[update_AlphaMask_list.index(iteration)] * args.batch_size)
@@ -759,7 +766,8 @@ def reconstruction(args):
 
 
 if __name__ == '__main__':
-
+    
+    start_time = time.time()
     torch.set_default_dtype(torch.float32)
     torch.manual_seed(20211202)
     np.random.seed(20211202)
@@ -774,4 +782,5 @@ if __name__ == '__main__':
         render_test(args)
     else:
         reconstruction(args)
+    print("--- running time %s seconds ---" % (time.time() - start_time))
 

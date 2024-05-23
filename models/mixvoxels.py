@@ -458,9 +458,10 @@ class MixVoxels(torch.nn.Module):
         alpha[alpha<self.alphaMask_thres] = 0
 
         self.alphaMask = AlphaGridMask(self.device, self.aabb, alpha)
-
+        
         valid_xyz = dense_xyz[alpha>0.5]
-
+        if valid_xyz.shape[0] == 0:
+            return self.aabb
         xyz_min = valid_xyz.amin(0)
         xyz_max = valid_xyz.amax(0)
 
@@ -722,17 +723,22 @@ class MixVoxels(torch.nn.Module):
         static_acc_map = torch.sum(static_weight, dim=1)
         static_rgb_map = torch.sum(static_weight[..., None] * static_rgb, dim=1)
         if white_bg or (is_train and torch.rand((1,)) < 0.5):
-            static_rgb_map = static_rgb_map + (1. - static_acc_map[..., None])
+            static_rgb_map = static_rgb_map + (1. - static_acc_map[..., None])*0
+        #if is_train and torch.rand((1,)) < 0.5:
+        #    static_rgb_map = static_rgb_map + (1. - static_acc_map[..., None])*1
+            
         static_rgb_map = static_rgb_map.clamp(0, 1)
         with torch.no_grad():
             static_depth_map = torch.sum(static_weight * z_vals, dim=1)
             static_depth_map = static_depth_map + (1. - static_acc_map) * rays_chunk[..., -1]
+
         return static_sigma, static_rgb, static_rgb_map, static_depth_map, static_fraction, valid_static_sigma, \
                static_alpha, static_weight, static_acc_map
 
     def forward_seperatly(self, rays_chunk, std_train, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1,
                           rgb_train=None, composite_by_points=False, temporal_indices=None, diff_calc=False,
                           render_path=False, nodepth=False):
+
         timing = dict()
         _t = time.time()
         # if self.dynamic_granularity == 'point_wise':
@@ -742,6 +748,7 @@ class MixVoxels(torch.nn.Module):
         xyz_sampled = self.normalize_coord(xyz_sampled)
         # temporal mask
         num_frames = self.n_frames if temporal_indices is None else self.n_train_frames
+
         temporal_mask, dynamic_prediction, dynamics_supervision, ray_wise_temporal_mask = \
             self.generate_temporal_mask(None if self.dynamic_granularity == 'point_wise' else rgb_train,
                                         std_train, xyz_sampled, dists, temporal_indices,
@@ -749,7 +756,7 @@ class MixVoxels(torch.nn.Module):
         t_ = time.time()
         timing['preprocessing'] = t_ - _t
         _t = t_
-
+        
         # ======================static branch==================
         static_sigma, static_rgb, static_rgb_map, static_depth_map, static_fraction, \
         valid_static_sigma, static_alpha, static_weight, static_acc_map = \
@@ -797,10 +804,10 @@ class MixVoxels(torch.nn.Module):
             validsigma = None
             if render_path:
                 ret = {
-                    'comp_rgb_map': static_rgb_map.unsqueeze(dim=1).expand(-1, self.n_frames, -1),
+                    'comp_rgb_map': static_rgb_map.unsqueeze(dim=1).expand(-1, num_frames, -1),
                 }
                 if not nodepth:
-                    ret.update({'comp_depth_map': static_depth_map.unsqueeze(dim=1).expand(-1, self.n_frames)})
+                    ret.update({'comp_depth_map': static_depth_map.unsqueeze(dim=1).expand(-1, num_frames)})
                 return ret
 
         # if self.time_head == 'forrier' and is_train and ray_valid.any():
@@ -930,14 +937,18 @@ class MixVoxels(torch.nn.Module):
         rgb_map[~ray_mask] = static_rgb_map.detach()[~ray_mask].unsqueeze(dim=1)
 
         if white_bg or (is_train and torch.rand((1,)) < 0.5):
-            rgb_map = rgb_map + (1. - acc_map[..., None])
+            rgb_map = rgb_map + (1. - acc_map[..., None])*0
+        #if is_train and torch.rand((1,)) < 0.5:
+        #    static_rgb_map = static_rgb_map + (1. - static_acc_map[..., None])*1
+            
         rgb_map = rgb_map.clamp(0, 1)
         if nodepth == False:
             with torch.no_grad():
                 # depth_map = torch.sum(weight * z_vals.unsqueeze(dim=-1), dim=1)
                 # substitute of the above commented code
                 depth_map = torch.zeros((xyz_sampled.shape[0], num_frames), device=xyz_sampled.device, dtype=(torch.float32))
-                depth_map[ray_mask] = torch.sum(weight[ray_mask] * z_vals.unsqueeze(dim=-1), dim=1)
+                # TODO: check ray_mask
+                depth_map[ray_mask] = torch.sum(weight[ray_mask] * z_vals[ray_mask].unsqueeze(dim=-1), dim=1)
                 depth_map = depth_map + (1. - acc_map) * rays_chunk[..., -1].unsqueeze(dim=-1)
                 depth_map[~ray_mask] = static_depth_map[~ray_mask].detach().unsqueeze(dim=-1)
         # ===================================================
@@ -962,6 +973,7 @@ class MixVoxels(torch.nn.Module):
                 ret = {'comp_rgb_map': comp_rgb_map}
                 if nodepth == False:
                     ret.update({'comp_depth_map': comp_depth_map})
+                
                 return ret
 
             # comp_sigma = sigma * temporal_mask.float() + static_sigma.unsqueeze(dim=-1) * (1-temporal_mask.float())

@@ -38,6 +38,7 @@ def config_parser(cmd=None):
     parser.add_argument("--n_iters", type=int, default=30000)
     parser.add_argument("--n_dynamic_iters", type=int, default=2000)
     parser.add_argument("--n_frames", type=int, default=100)
+    parser.add_argument("--n_cam", type=int, default=53)
     parser.add_argument("--n_train_frames", type=int, default=10)
     parser.add_argument("--n_time_embedding", type=int, default=24)
     parser.add_argument("--render_views", type=int, default=120)
@@ -45,14 +46,14 @@ def config_parser(cmd=None):
     parser.add_argument("--zero_dynamic_sigma_thresh", type=float, default=0.001)
 
     parser.add_argument('--dataset_name', type=str, default='blender',
-                        choices=['blender', 'llff', 'llffvideo', 'nsvf', 'dtu','tankstemple', 'own_data', 'ssd'])
+                        choices=['blender', 'llff', 'llffvideo', 'nsvf', 'dtu','tankstemple', 'own_data', 'ssd', 'brics'])
     parser.add_argument("--near", type=float, default=0.0)
     parser.add_argument("--far", type=float, default=1.0)
     parser.add_argument("--frame_start", type=int, default=0, help='frame start')
     parser.add_argument("--diffuse_kernel", type=int, default=0, help='diffuse kernel size')
 
     parser.add_argument("--render_path_start", type=int, default=0, help='diffuse kernel size')
-
+    parser.add_argument("--render_split", type=str, default='test')
     # dynamic prunning
     parser.add_argument('--static_branch_only_initial', type=int, default=0)
     parser.add_argument('--dynamic_only_ray_start_iteration', type=int, default=-1)
@@ -243,7 +244,8 @@ def config_parser(cmd=None):
     parser.add_argument("--init_dynamic_std", type=float, default=0.1, help='initialization of static voxels')
     parser.add_argument("--init_dynamic_a", type=float, default=-0.1, help='initialization of static voxels')
     parser.add_argument("--init_dynamic_b", type=float, default=0.1, help='initialization of static voxels')
-
+    
+    parser.add_argument("--split", type=str, default='circle', help='split for trajectory visualization')
     if cmd is not None:
         return parser.parse_args(cmd)
     else:
